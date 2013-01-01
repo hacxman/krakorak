@@ -9,7 +9,8 @@
 
 #include <list>
 
-//#include <ueye.h>
+#include "UEyeOpenCVException.hpp"
+#include "UEyeOpenCV.hpp"
 
 using namespace std;
 using namespace cv;
@@ -24,26 +25,63 @@ Scalar clrs[] = {Scalar(255,  0,  0),
                  Scalar(  0,255,255)};
 
 int main(void) {
-//  HIDS camHnd = 
-
+  FileStorage config("cfg.yml", FileStorage::READ);
+  String driver;
+  config["driver"] >> driver;
 
   namedWindow("a", CV_WINDOW_AUTOSIZE);
   namedWindow("b", CV_WINDOW_AUTOSIZE);
-  VideoCapture cap(0);
+  VideoCapture *capNative;
+  UeyeOpencvCam *capUeye;
+  if (driver == "native") {
+    capNative = new VideoCapture(0);
+  } else if (driver == "file") {
+    String fname;
+    config["filename"] >> fname;
+    capNative = new VideoCapture(fname); //0);
+  } else if (driver == "ueye") {
+    capUeye = new UeyeOpencvCam(640, 480);
+    cout << capUeye->getHIDS() << endl;
+  } else {
+    cerr << "invalid driver: '" << driver << "'" << endl;
+    cerr << "posible are: native, file, ueye" << endl;
+    exit(2);
+  }
+
   Mat img;
   list<Mat> avgs;
   list<Mat>::iterator it;
   Mat _img;
   for (int i = 0; i < FLT_SIZE; i++) {
-    cap >> _img;
+    if (driver == "native" || driver == "file") {
+      *capNative >> _img;
+    } else if (driver == "ueye") {
+      _img = capUeye->getFrame();
+    }
+
+    Rect myROI(10, 10, _img.cols-40, _img.rows-40);
+    cv::Mat croppedImage = _img(myROI);
+    _img = croppedImage;
+
+
     cvtColor(_img, img, CV_32F);
     _img *= 1./255;
     cvtColor(_img, img, CV_RGB2GRAY);
     avgs.push_back(img);
   }
   cout << "avgs.len = " << avgs.size() << endl;
-  for (;;) {
-    cap >> img;
+  for (int frame_id = 0;;frame_id++) {
+    if (driver == "native" || driver == "file") {
+      *capNative >> img;
+      cerr << frame_id << endl;
+    } else if (driver == "ueye") {
+      img = capUeye->getFrame();
+    }
+
+    Rect myROI(10, 10, img.cols-40, img.rows-40);
+    cv::Mat croppedImage = img(myROI);
+    img = croppedImage;
+
     if (img.empty()) {break;}
     imshow("a", img);
 
@@ -57,26 +95,29 @@ int main(void) {
     it = avgs.begin();
     Mat avg = (*it).clone();
     avg /= (float)FLT_SIZE;
-
     for (it++; it != avgs.end(); it++) {
 //      accumulateWeighted(*it, avg, 1/20.0);
       accumulate((*it) / FLT_SIZE, avg);
     }
     Mat o = img.clone();
     o = img - avg;
-    Scalar m = mean(avg);
-//    cout << m[1] << endl;
+    Scalar m = mean(img);
+    cout << m[1] << endl;
     vector<vector<Point>> cont;
-    threshold(img - avg, o, 0.1, 1, THRESH_BINARY);
+    threshold(img - avg, o, 0.07, 1, THRESH_BINARY);
+    //o *= 255;
+    //o.convertTo(o, CV_8U);
+    //adaptiveThreshold(o, o, 25, ADAPTIVE_THRESH_GAUSSIAN_C, THRESH_BINARY, 65, 2.4);
+//    imshow("b", o);
     o.convertTo(o, CV_8U);
     findContours(o, cont, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE, Point(0,0));
 //    adaptiveThreshold(img - avg, o, 1, ADAPTIVE_THRESH_GAUSSIAN_C, THRESH_BINARY, 4, 0.1);
     Mat a; //= img.clone();
 //    img.convertTo(a, CV_GRAY2RGB);
     a = Mat::zeros(img.rows, img.cols, CV_8UC3);
-    printf("%d\n", a.channels());
+//    printf("%d\n", a.channels());
     for (int i = 0; i < cont.size(); i++) {
-      drawContours(a, cont, i, clrs[i%6]);
+      drawContours(a, cont, i, clrs[i%6], CV_FILLED);
     };
 //    drawContours(a, cont, -1, Scalar(255.0,1.0,0.0));
     imshow("b", a);
