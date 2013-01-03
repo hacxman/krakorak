@@ -6,6 +6,7 @@
 #include <opencv2/imgproc/imgproc.hpp>  // Gaussian Blur
 #include <opencv2/core/core.hpp>        // Basic OpenCV structures (cv::Mat, Scalar)
 #include <opencv2/highgui/highgui.hpp>  // OpenCV window I/O
+#include <opencv2/flann/flann.hpp>  // OpenCV window I/O
 
 #include <list>
 
@@ -51,6 +52,7 @@ int main(void) {
   Mat img;
   list<Mat> avgs;
   list<Mat>::iterator it;
+  Mat oldCenters;
   Mat _img;
   for (int i = 0; i < FLT_SIZE; i++) {
     if (driver == "native" || driver == "file") {
@@ -104,7 +106,7 @@ int main(void) {
     Scalar m = mean(img);
     cout << m[1] << endl;
     vector<vector<Point>> cont;
-    threshold(img - avg, o, 0.07, 1, THRESH_BINARY);
+    threshold(img - avg, o, 0.1, 1, THRESH_BINARY);
     //o *= 255;
     //o.convertTo(o, CV_8U);
     //adaptiveThreshold(o, o, 25, ADAPTIVE_THRESH_GAUSSIAN_C, THRESH_BINARY, 65, 2.4);
@@ -116,14 +118,77 @@ int main(void) {
 //    img.convertTo(a, CV_GRAY2RGB);
     a = Mat::zeros(img.rows, img.cols, CV_8UC3);
 //    printf("%d\n", a.channels());
+    Mat centers;
+    //vector<Point2f> cs;
     for (int i = 0; i < cont.size(); i++) {
+      cout << "Cont " << i << endl;
+      Moments mmts = moments(cont[i], true);
+      Point2f enCirc; float radius;
+      minEnclosingCircle(cont[i], enCirc, radius);
+      if (mmts.m00 == 0) continue;
+      double _x = mmts.m10/mmts.m00;
+      double _y = mmts.m01/mmts.m00;
+      cout << "    x,y = " << _x << " " << _y << " " << radius << endl;
       drawContours(a, cont, i, clrs[i%6], CV_FILLED);
+      line(a, Point(_x-10, _y), Point(_x+10, _y), Scalar(255, 255, 255, 255));
+      line(a, Point(_x, _y-10), Point(_x, _y+10), Scalar(255, 255, 255, 255));
+      centers.push_back(Mat(Matx21f(_x, _y)));
+      //cs.push_back(Point(_x, _y));
+//      cout << centers.cols << " "
+//        << centers.rows << endl;
+
     };
+    //centers = Mat(cs);
+    if (!oldCenters.empty()) {
+      //cout << "KOKOOOOOOOOOOOOOOOOOOOOOOOOOT "
+      //  << oldCenters.cols << " "
+      //  << oldCenters.rows << endl;
+      cv::flann::KDTreeIndexParams parms(16);
+//      oldCenters.convertTo(oldCenters, CV_32F);
+
+      cv::flann::Index index(oldCenters, parms);
+
+//      vector<int> indices;
+//      vector<float> dists;
+      Mat indices = Mat(centers.rows, 2, CV_32SC1);
+      Mat dists = Mat(centers.rows, 2, CV_32FC1);
+
+      centers.convertTo(centers, CV_32F);
+//      vector<Point2f> query; query.push_back(Point(oldCenters.col(0)));
+      index.knnSearch(centers, indices, dists, 2, cv::flann::SearchParams());
+      for (int row = 0; row < indices.rows; row++) {
+        for (int col = 0; col < indices.cols; col++) {
+//          int idx = indices[row]; //indices.at<int>(row, col);
+//          float dst = dists[row]; //dists.at<int>(row, col);
+          int idx = indices.at<int>(row, col);
+          float dst = dists.at<float>(row, col);
+          if (dst < 20.0) {
+            cout << "KUUUUUUUUUUUUUUUUUUUUUURWAAAAAAAAAAA" << endl;
+            cout << dst << " " << idx << endl;
+            Point p1(oldCenters.at<float>(idx, 0),oldCenters.at<float>(idx, 1));
+            Point p2(centers.at<float>(row, 0),centers.at<float>(row, 1));
+            cout << "p1 " << p1.x << " " << p1.y << endl;
+            line(a, p1+Point(-10, -10), p1+Point(10, 10), Scalar(255, 255, 0, 255));
+            line(a, p1+Point(10, -10), p1+Point(-10, 10), Scalar(255, 255, 0, 255));
+            //line(a, p2+Point(-10, -10), p2+Point(10, 10), Scalar(255, 0, 255, 128));
+            //line(a, p2+Point(10, -10), p2+Point(-10, 10), Scalar(255, 0, 255, 128));
+      //      line(a, p1, p2, Scalar(255, 255, 255, 0));
+          }
+
+        }
+      }
+
+    }
+//    } else { //cout << "             PICAAAAAAAAAA"
+//        << centers.cols << " "
+//        << centers.rows << endl; };
+
+
+    oldCenters = centers.clone();
 //    drawContours(a, cont, -1, Scalar(255.0,1.0,0.0));
     imshow("b", a);
 
-    int c = cvWaitKey(1);
+    int c = cvWaitKey(50);
     if (c == 27) break;
   }
 }
-
