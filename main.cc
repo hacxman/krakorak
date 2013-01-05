@@ -12,6 +12,8 @@
 #include <opencv2/flann/flann.hpp>  // OpenCV window I/O
 #include <opencv2/gpu/gpu.hpp>
 
+#include <opencv2/video/tracking.hpp>
+
 #include <list>
 #include <unistd.h>
 
@@ -23,6 +25,70 @@
 using namespace std;
 using namespace std::chrono;
 using namespace cv;
+
+class Trail {
+  private:
+
+  vector<Point2f> tail;
+  KalmanFilter KF;
+  Point prediction;
+  int age;
+
+  public:
+
+  static vector<Point2f> toV2f(vector<Trail> &ts) {
+    vector<Point2f> out;
+    for (vector<Trail>::iterator it = ts.begin();
+         it != ts.end(); it++) {
+      if (it->isOld()) continue;
+      out.push_back(it->predict());
+    }
+    return out;
+  }
+
+  bool isOld() {
+    return age > 2 && tail.size() > 1 && age > tail.size();
+  };
+
+  static void runGC(vector<Trail> &ts) {
+    vector<Trail> out;
+    for (vector<Trail>::iterator it = ts.begin();
+         it != ts.end(); it++) {
+
+      it->age++;
+
+      if (it->age > 2 && it->tail.size() < 2) {
+        break;
+      }
+      out.push_back(*it);
+    }
+    ts = out;
+
+  }
+
+  Point2f predict() {
+    if (tail.size() > 1) {
+      return prediction;
+    } else {
+      return tail[tail.size()-1];
+    }
+  };
+
+  Trail() : KF(2,1,0), age(0) {};
+
+  void operator<<(Point2f &p) {
+    if (tail.size() > 2) {
+      KF.correct(Mat(Matx12f(p.x, p.y)));
+    }
+    tail.push_back(p);
+    if (tail.size() > 1) {
+      int ts = tail.size();
+      Mat _prediction = KF.predict(Mat(Matx22f(tail[ts-1].x, tail[ts-1].y,
+                                               tail[ts-2].x, tail[ts-2].y)));
+      prediction = Point(_prediction.at<float>(0), _prediction.at<float>(1));
+    }
+  }
+};
 
 int FLT_SIZE = 10;
 
@@ -61,8 +127,8 @@ inline void nearestN(vector<Point2f> &centers, vector<Point2f> &oldCenters, vect
 }
 
 
-int th_trackbar = 20;
-int mw_trackbar = 10;
+int th_trackbar = 13;
+int mw_trackbar = 20;
 
 void init_gui() {
   namedWindow("a", CV_WINDOW_AUTOSIZE);
@@ -142,7 +208,7 @@ int main(void) {
   high_resolution_clock::time_point _LAST(_CLOCK.now());
   for (int frame_id = 0;;frame_id++) {
     cap >> img;
-    FLT_SIZE = mw_trackbar;
+    //FLT_SIZE = mw_trackbar;
 
     Rect myROI(10, 10, img.cols-40, img.rows-40);
     //Rect myROI(0, 0, _img.cols, _img.rows);
@@ -176,15 +242,15 @@ int main(void) {
 
     it = avgs.begin();
     Mat avg = (*it).clone();
-    avg /= (float)FLT_SIZE;
+    avg /= (float)avgs.size();// FLT_SIZE;
     for (it++; it != avgs.end(); it++) {
 //      accumulateWeighted(*it, avg, 1/20.0);
-      accumulate((*it) / FLT_SIZE, avg);
+      accumulate((*it) / avgs.size(), avg);
     }
     Mat o = img.clone();
     o = img - avg;
     Scalar m = mean(img);
-    cout << m[0] << endl;
+    //cout << m[0] << endl;
     vector<vector<Point>> cont;
     threshold(img - avg, o, m[0]/(th_trackbar/10.0), 1, THRESH_BINARY);
 
@@ -194,7 +260,7 @@ int main(void) {
     vector<Point2f> centers;
     vector<float> radii;
     for (int i = 0; i < cont.size(); i++) {
-      cout << "Cont " << i << endl;
+      //cout << "Cont " << i << endl;
       Moments mmts = moments(cont[i], true);
       Point2f enCirc; float radius;
       minEnclosingCircle(cont[i], enCirc, radius);
@@ -202,7 +268,7 @@ int main(void) {
       if (mmts.m00 == 0) continue;
       double _x = mmts.m10/mmts.m00;
       double _y = mmts.m01/mmts.m00;
-      cout << "    x,y = " << _x << " " << _y << " " << radius << endl;
+      //cout << "    x,y = " << _x << " " << _y << " " << radius << endl;
       drawContours(a, cont, i, clrs[i%6], CV_FILLED);
     //  drawContours(origImg, cont, i, clrs[i%6]);
       line(a, Point(_x-5, _y), Point(_x+5, _y), Scalar(255, 255, 255, 35));
@@ -218,7 +284,7 @@ int main(void) {
 #pragma omp parallel for
       for (int i = 0; i < c_size; i++) {
           int idx = indices[i];
-          cout << "idx: " << idx << endl;
+          //cout << "idx: " << idx << endl;
           Point p2 = centers[i];
           Point p1 = oldCenters[idx];
           float dst = norm(p2 - p1);
@@ -228,10 +294,10 @@ int main(void) {
           }
           if (dst < radii[i]*10.0 && dst > 1.0) {
 //          if (dst < 20.0) {
-            cout << "KUUUUUUUUUUUUUUUUUUUUUURWAAAAAAAAAAA" << endl;
-            cout << "dst: " << dst << " idx: " << idx << endl;
-            cout << "     p1 " << p1.x << " " << p1.y << endl;
-            cout << "     p2 " << p2.x << " " << p2.y << endl;
+      //      cout << "KUUUUUUUUUUUUUUUUUUUUUURWAAAAAAAAAAA" << endl;
+      //      cout << "dst: " << dst << " idx: " << idx << endl;
+      //      cout << "     p1 " << p1.x << " " << p1.y << endl;
+      //      cout << "     p2 " << p2.x << " " << p2.y << endl;
             line(a, p1+Point(-10, -10), p1+Point(10, 10), Scalar(255, 255, 0, 55));
             line(a, p1+Point(10, -10), p1+Point(-10, 10), Scalar(255, 255, 0, 55));
             line(a, p2+Point(-10, -10), p2+Point(10, 10), Scalar(255, 0, 255, 128));
@@ -261,7 +327,7 @@ int main(void) {
 
     imshow("b", a);
 
-    int c = waitKey(1);//frame_id > 150 && frame_id < 250 ? 0: 2);
+    int c = waitKey(frame_id > 150 && frame_id < 250 ? 0: 2);
 //    cout << "#####  " << (0xff & c) << "  #####" << endl;
     if (c == 27) break;
     if ((0xff & c) == ' ') usleep(20000);
