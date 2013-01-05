@@ -2,18 +2,26 @@
 #include <string>   // for strings
 #include <iomanip>  // for controlling float print precision
 #include <sstream>  // string to number conversion
+#include <chrono>
+
+#include <algorithm>
 
 #include <opencv2/imgproc/imgproc.hpp>  // Gaussian Blur
 #include <opencv2/core/core.hpp>        // Basic OpenCV structures (cv::Mat, Scalar)
 #include <opencv2/highgui/highgui.hpp>  // OpenCV window I/O
 #include <opencv2/flann/flann.hpp>  // OpenCV window I/O
+#include <opencv2/gpu/gpu.hpp>
 
 #include <list>
+#include <unistd.h>
 
-#include "UEyeOpenCVException.hpp"
-#include "UEyeOpenCV.hpp"
+#define GUI
+
+//#include "UEyeOpenCVException.hpp"
+//#include "UEyeOpenCV.hpp"
 
 using namespace std;
+using namespace std::chrono;
 using namespace cv;
 
 const int FLT_SIZE = 10;
@@ -25,42 +33,56 @@ Scalar clrs[] = {Scalar(255,  0,  0),
                  Scalar(255,255,  0),
                  Scalar(  0,255,255)};
 
+
+void init_cuda() {
+  cout << "CUDA enabled devices: " << gpu::getCudaEnabledDeviceCount() << endl;
+}
+
 int main(void) {
+
+  init_cuda();
+
   FileStorage config("cfg.yml", FileStorage::READ);
   String driver;
   config["driver"] >> driver;
 
   namedWindow("a", CV_WINDOW_AUTOSIZE);
   namedWindow("b", CV_WINDOW_AUTOSIZE);
+  int th_trackbar = 20;
+  int mw_trackbar = 10;
+  createTrackbar("th", "a", &th_trackbar, 100);
+  createTrackbar("mw", "a", &mw_trackbar, 100);
   VideoCapture *capNative;
-  UeyeOpencvCam *capUeye;
+//  UeyeOpencvCam *capUeye;
   if (driver == "native") {
     capNative = new VideoCapture(0);
   } else if (driver == "file") {
     String fname;
     config["filename"] >> fname;
     capNative = new VideoCapture(fname); //0);
-  } else if (driver == "ueye") {
-    capUeye = new UeyeOpencvCam(640, 480);
-    cout << capUeye->getHIDS() << endl;
+//  } else if (driver == "ueye") {
+//    capUeye = new UeyeOpencvCam(640, 480);
+//    cout << capUeye->getHIDS() << endl;
   } else {
     cerr << "invalid driver: '" << driver << "'" << endl;
-    cerr << "posible are: native, file, ueye" << endl;
+//    cerr << "posible are: native, file, ueye" << endl;
     exit(2);
   }
 
   Mat img;
   list<Mat> avgs;
   list<Mat>::iterator it;
-  Mat oldCenters;
+  //Mat oldCenters;
+  vector<Point2f> oldCenters;
   Mat _img;
   for (int i = 0; i < FLT_SIZE; i++) {
     if (driver == "native" || driver == "file") {
       *capNative >> _img;
-    } else if (driver == "ueye") {
-      _img = capUeye->getFrame();
+//    } else if (driver == "ueye") {
+//      _img = capUeye->getFrame();
     }
 
+    //Rect myROI(0, 0, _img.cols, _img.rows);
     Rect myROI(10, 10, _img.cols-40, _img.rows-40);
     cv::Mat croppedImage = _img(myROI);
     _img = croppedImage;
@@ -72,25 +94,52 @@ int main(void) {
     avgs.push_back(img);
   }
   cout << "avgs.len = " << avgs.size() << endl;
+
+  high_resolution_clock _CLOCK;
+  high_resolution_clock::time_point _LAST(_CLOCK.now());
   for (int frame_id = 0;;frame_id++) {
     if (driver == "native" || driver == "file") {
       *capNative >> img;
-      cerr << frame_id << endl;
-    } else if (driver == "ueye") {
-      img = capUeye->getFrame();
+      //cerr << frame_id << endl;
+//    } else if (driver == "ueye") {
+//      img = capUeye->getFrame();
     }
+//    Mat origImg = img.clone();
+//    {
+//      high_resolution_clock::time_point now = _CLOCK.now();
+//      duration<float> dur = duration_cast<duration<float>>(now - _LAST);
+//      _LAST = now;
+//      char lala[32]; sprintf(lala, "%d %f %f", frame_id, dur.count(), 1/dur.count());
+//      putText(origImg, lala, Point(10, 20), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 0, 0, 255));
+//    }
 
     Rect myROI(10, 10, img.cols-40, img.rows-40);
+    //Rect myROI(0, 0, _img.cols, _img.rows);
     cv::Mat croppedImage = img(myROI);
     img = croppedImage;
 
+    Mat origImg = img.clone();
+    {
+      high_resolution_clock::time_point now = _CLOCK.now();
+      duration<float> dur = duration_cast<duration<float>>(now - _LAST);
+      _LAST = now;
+      char lala[32]; sprintf(lala, "%d %f %f", frame_id, dur.count(), 1/dur.count());
+      cerr << "\r" << lala;
+      putText(origImg, lala, Point(10, 20), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 0, 0, 255));
+    }
+
     if (img.empty()) {break;}
-    imshow("a", img);
+#ifdef GUI
+    //imshow("a", img);
+#endif
 
     img.convertTo(_img, CV_32F);
     _img *= 1./255;
     cvtColor(_img, img, CV_RGB2GRAY);
 
+    while (avgs.size() > mw_trackbar) {
+      avgs.pop_back();
+    }
     avgs.pop_back();
     avgs.push_front(img.clone());
 
@@ -104,9 +153,10 @@ int main(void) {
     Mat o = img.clone();
     o = img - avg;
     Scalar m = mean(img);
-    cout << m[1] << endl;
+    cout << m[0] << endl;
     vector<vector<Point>> cont;
-    threshold(img - avg, o, 0.1, 1, THRESH_BINARY);
+    threshold(img - avg, o, m[0]/(th_trackbar/10.0), 1, THRESH_BINARY);
+
     //o *= 255;
     //o.convertTo(o, CV_8U);
     //adaptiveThreshold(o, o, 25, ADAPTIVE_THRESH_GAUSSIAN_C, THRESH_BINARY, 65, 2.4);
@@ -118,77 +168,129 @@ int main(void) {
 //    img.convertTo(a, CV_GRAY2RGB);
     a = Mat::zeros(img.rows, img.cols, CV_8UC3);
 //    printf("%d\n", a.channels());
-    Mat centers;
+    vector<Point2f> centers;
+    vector<float> radii;
+    //Mat centers;
     //vector<Point2f> cs;
     for (int i = 0; i < cont.size(); i++) {
       cout << "Cont " << i << endl;
       Moments mmts = moments(cont[i], true);
       Point2f enCirc; float radius;
       minEnclosingCircle(cont[i], enCirc, radius);
+    //  circle(origImg, enCirc, radius, Scalar(255,255,255,255));
       if (mmts.m00 == 0) continue;
       double _x = mmts.m10/mmts.m00;
       double _y = mmts.m01/mmts.m00;
       cout << "    x,y = " << _x << " " << _y << " " << radius << endl;
       drawContours(a, cont, i, clrs[i%6], CV_FILLED);
-      line(a, Point(_x-10, _y), Point(_x+10, _y), Scalar(255, 255, 255, 255));
-      line(a, Point(_x, _y-10), Point(_x, _y+10), Scalar(255, 255, 255, 255));
-      centers.push_back(Mat(Matx21f(_x, _y)));
+    //  drawContours(origImg, cont, i, clrs[i%6]);
+      line(a, Point(_x-5, _y), Point(_x+5, _y), Scalar(255, 255, 255, 35));
+      line(a, Point(_x, _y-5), Point(_x, _y+5), Scalar(255, 255, 255, 35));
+      //centers.push_back(Mat(Matx12f(_x, _y)));
+      centers.push_back(Point(_x, _y));
+      radii.push_back(radius);
       //cs.push_back(Point(_x, _y));
-//      cout << centers.cols << " "
-//        << centers.rows << endl;
 
     };
+//    cout << centers.cols << " "
+//         << centers.rows << endl;
     //centers = Mat(cs);
     if (!oldCenters.empty()) {
-      //cout << "KOKOOOOOOOOOOOOOOOOOOOOOOOOOT "
-      //  << oldCenters.cols << " "
-      //  << oldCenters.rows << endl;
-      cv::flann::KDTreeIndexParams parms(16);
-//      oldCenters.convertTo(oldCenters, CV_32F);
+//      //cout << "KOKOOOOOOOOOOOOOOOOOOOOOOOOOT "
+//      //  << oldCenters.cols << " "
+//      //  << oldCenters.rows << endl;
+//      cv::flann::KDTreeIndexParams parms(16);
+////      oldCenters.convertTo(oldCenters, CV_32F);
+//
+//      cv::flann::Index index(oldCenters, parms);
+//
+////      vector<int> indices;
+////      vector<float> dists;
+//      Mat indices = Mat(centers.rows, 4, CV_32SC1);
+//      Mat dists = Mat(centers.rows, 4, CV_32FC1);
+//
+//      centers.convertTo(centers, CV_32F);
+////      vector<Point2f> query; query.push_back(Point(oldCenters.col(0)));
+//      index.knnSearch(centers, indices, dists, 4, cv::flann::SearchParams());
+      //Mat indices = Mat(centers.rows, 4, CV_32SC1);
+      //Mat dists = Mat(centers.rows, 4, CV_32FC1);
+      int c_size = centers.size();
+      int oc_size = oldCenters.size();
+      vector<int> indices(c_size);
+      { // find nearest neighbors, in O(n^2)
+        vector<float> mins(c_size);
+#pragma omp parallel for
+        for (int i = 0; i < c_size; i++) {
+          for (int j = 0; j < oc_size; j++) {
+            Point p1 = centers[i];
+            Point p2 = oldCenters[j];
+            float len = norm(p1 - p2);
+            if (mins[i] == 0 || mins[i] > len) {
+              mins[i] = len;
+              indices[i] = j;
+            }
+          }
+        }
+      }
 
-      cv::flann::Index index(oldCenters, parms);
-
-//      vector<int> indices;
-//      vector<float> dists;
-      Mat indices = Mat(centers.rows, 2, CV_32SC1);
-      Mat dists = Mat(centers.rows, 2, CV_32FC1);
-
-      centers.convertTo(centers, CV_32F);
-//      vector<Point2f> query; query.push_back(Point(oldCenters.col(0)));
-      index.knnSearch(centers, indices, dists, 2, cv::flann::SearchParams());
-      for (int row = 0; row < indices.rows; row++) {
-        for (int col = 0; col < indices.cols; col++) {
-//          int idx = indices[row]; //indices.at<int>(row, col);
-//          float dst = dists[row]; //dists.at<int>(row, col);
-          int idx = indices.at<int>(row, col);
-          float dst = dists.at<float>(row, col);
-          if (dst < 20.0) {
+//      for (int row = 0; row < indices.rows; row++) {
+//        for (int col = 0; col < indices.cols; col++) {
+////          int idx = indices[row]; //indices.at<int>(row, col);
+////          float dst = dists[row]; //dists.at<int>(row, col);
+//          cout << "row, col: " << row << ", " << col << endl;
+//          int idx = indices.at<int>(row, col);
+//          float dst = dists.at<float>(row, col);
+#pragma omp parallel for
+      for (int i = 0; i < c_size; i++) {
+          int idx = indices[i];
+          cout << "idx: " << idx << endl;
+          //if (idx >= oldCenters.rows || idx < 0) break;
+          Point p2 = centers[i]; //(oldCenters.at<float>(idx, 0),oldCenters.at<float>(idx, 1));
+          Point p1 = oldCenters[idx]; //(centers.at<float>(col, 0),centers.at<float>(col, 1));
+          float dst = norm(p2 - p1);
+          {
+              char lala[32]; sprintf(lala, "r: %.2f, d: %.2f", radii[i], dst);
+              putText(origImg, lala, p2+Point(10,10), FONT_HERSHEY_SIMPLEX, 0.3, Scalar(0, 255, 0, 255));
+          }
+          if (dst < radii[i]*10.0 && dst > 1.0) {
+//          if (dst < 20.0) {
             cout << "KUUUUUUUUUUUUUUUUUUUUUURWAAAAAAAAAAA" << endl;
-            cout << dst << " " << idx << endl;
-            Point p1(oldCenters.at<float>(idx, 0),oldCenters.at<float>(idx, 1));
-            Point p2(centers.at<float>(row, 0),centers.at<float>(row, 1));
-            cout << "p1 " << p1.x << " " << p1.y << endl;
-            line(a, p1+Point(-10, -10), p1+Point(10, 10), Scalar(255, 255, 0, 255));
-            line(a, p1+Point(10, -10), p1+Point(-10, 10), Scalar(255, 255, 0, 255));
-            //line(a, p2+Point(-10, -10), p2+Point(10, 10), Scalar(255, 0, 255, 128));
-            //line(a, p2+Point(10, -10), p2+Point(-10, 10), Scalar(255, 0, 255, 128));
-      //      line(a, p1, p2, Scalar(255, 255, 255, 0));
+            cout << "dst: " << dst << " idx: " << idx << endl;
+            cout << "     p1 " << p1.x << " " << p1.y << endl;
+            cout << "     p2 " << p2.x << " " << p2.y << endl;
+            line(a, p1+Point(-10, -10), p1+Point(10, 10), Scalar(255, 255, 0, 55));
+            line(a, p1+Point(10, -10), p1+Point(-10, 10), Scalar(255, 255, 0, 55));
+            line(a, p2+Point(-10, -10), p2+Point(10, 10), Scalar(255, 0, 255, 128));
+            line(a, p2+Point(10, -10), p2+Point(-10, 10), Scalar(255, 0, 255, 128));
+            line(origImg, p1, p2, Scalar(255, 255, 255, 0));
+            line(origImg, p2, p2 + (p2 - p1), Scalar(0, 255, 0, 0));
           }
 
-        }
+//        }
       }
 
     }
 //    } else { //cout << "             PICAAAAAAAAAA"
 //        << centers.cols << " "
 //        << centers.rows << endl; };
+    {
+      char lala[32]; sprintf(lala, "th %f %f cont %d", m[0], m[0]/(th_trackbar/10.0), cont.size());
+      putText(origImg, lala, Point(10, 40), FONT_HERSHEY_SIMPLEX, 0.3, Scalar(0, 255, 0, 255));
+    }
 
+    cerr << " " << th_trackbar << " " << cont.size() << "     "; cerr.flush();
 
-    oldCenters = centers.clone();
+    oldCenters = centers; //centers.clone();
 //    drawContours(a, cont, -1, Scalar(255.0,1.0,0.0));
+#ifdef GUI
+    imshow("a", origImg);
+
     imshow("b", a);
 
-    int c = cvWaitKey(50);
+    int c = waitKey(1);//frame_id > 150 && frame_id < 250 ? 0: 2);
+//    cout << "#####  " << (0xff & c) << "  #####" << endl;
     if (c == 27) break;
+    if ((0xff & c) == ' ') usleep(20000);
+#endif
   }
 }
