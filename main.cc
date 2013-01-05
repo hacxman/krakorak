@@ -24,7 +24,7 @@ using namespace std;
 using namespace std::chrono;
 using namespace cv;
 
-const int FLT_SIZE = 10;
+int FLT_SIZE = 10;
 
 Scalar clrs[] = {Scalar(255,  0,  0),
                  Scalar(  0,  255,  0),
@@ -38,49 +38,92 @@ void init_cuda() {
   cout << "CUDA enabled devices: " << gpu::getCudaEnabledDeviceCount() << endl;
 }
 
+// indices must be of indices.size()
+inline void nearestN(vector<Point2f> &centers, vector<Point2f> &oldCenters, vector<int> &indices) {
+      int c_size = centers.size();
+      int oc_size = oldCenters.size();
+//      vector<int> indices(c_size);
+      { // find nearest neighbors, in O(n^2)
+        vector<float> mins(c_size);
+#pragma omp parallel for
+        for (int i = 0; i < c_size; i++) {
+          for (int j = 0; j < oc_size; j++) {
+            Point p1 = centers[i];
+            Point p2 = oldCenters[j];
+            float len = norm(p1 - p2);
+            if (mins[i] == 0 || mins[i] > len) {
+              mins[i] = len;
+              indices[i] = j;
+            }
+          }
+        }
+      }
+}
+
+
+int th_trackbar = 20;
+int mw_trackbar = 10;
+
+void init_gui() {
+  namedWindow("a", CV_WINDOW_AUTOSIZE);
+  namedWindow("b", CV_WINDOW_AUTOSIZE);
+  createTrackbar("th", "a", &th_trackbar, 100);
+  createTrackbar("mw", "a", &mw_trackbar, 100);
+}
+
+struct Capt {
+  VideoCapture *capNative;
+//  UeyeOpencvCam *capUeye;
+
+  string driver;
+
+  Capt(const FileStorage &config) {
+//    String driver;
+    config["driver"] >> driver;
+
+    if (driver == "native") {
+      capNative = new VideoCapture(0);
+    } else if (driver == "file") {
+     String fname;
+     config["filename"] >> fname;
+     capNative = new VideoCapture(fname); //0);
+  //  } else if (driver == "ueye") {
+  //    capUeye = new UeyeOpencvCam(640, 480);
+  //    cout << capUeye->getHIDS() << endl;
+    } else {
+      cerr << "invalid driver: '" << driver << "'" << endl;
+  //    cerr << "posible are: native, file, ueye" << endl;
+      exit(2);
+    }
+  }
+
+  void operator>>(Mat &m) {
+    if (driver == "native" || driver == "file") {
+      *capNative >> m;
+//    } else if (driver == "ueye") {
+//      m = capUeye->getFrame();
+    }
+
+  }
+
+};
+
 int main(void) {
 
   init_cuda();
 
   FileStorage config("cfg.yml", FileStorage::READ);
-  String driver;
-  config["driver"] >> driver;
+  Capt cap(config);
 
-  namedWindow("a", CV_WINDOW_AUTOSIZE);
-  namedWindow("b", CV_WINDOW_AUTOSIZE);
-  int th_trackbar = 20;
-  int mw_trackbar = 10;
-  createTrackbar("th", "a", &th_trackbar, 100);
-  createTrackbar("mw", "a", &mw_trackbar, 100);
-  VideoCapture *capNative;
-//  UeyeOpencvCam *capUeye;
-  if (driver == "native") {
-    capNative = new VideoCapture(0);
-  } else if (driver == "file") {
-    String fname;
-    config["filename"] >> fname;
-    capNative = new VideoCapture(fname); //0);
-//  } else if (driver == "ueye") {
-//    capUeye = new UeyeOpencvCam(640, 480);
-//    cout << capUeye->getHIDS() << endl;
-  } else {
-    cerr << "invalid driver: '" << driver << "'" << endl;
-//    cerr << "posible are: native, file, ueye" << endl;
-    exit(2);
-  }
+  init_gui();
 
   Mat img;
   list<Mat> avgs;
   list<Mat>::iterator it;
-  //Mat oldCenters;
   vector<Point2f> oldCenters;
   Mat _img;
   for (int i = 0; i < FLT_SIZE; i++) {
-    if (driver == "native" || driver == "file") {
-      *capNative >> _img;
-//    } else if (driver == "ueye") {
-//      _img = capUeye->getFrame();
-    }
+    cap >> _img;
 
     //Rect myROI(0, 0, _img.cols, _img.rows);
     Rect myROI(10, 10, _img.cols-40, _img.rows-40);
@@ -98,20 +141,8 @@ int main(void) {
   high_resolution_clock _CLOCK;
   high_resolution_clock::time_point _LAST(_CLOCK.now());
   for (int frame_id = 0;;frame_id++) {
-    if (driver == "native" || driver == "file") {
-      *capNative >> img;
-      //cerr << frame_id << endl;
-//    } else if (driver == "ueye") {
-//      img = capUeye->getFrame();
-    }
-//    Mat origImg = img.clone();
-//    {
-//      high_resolution_clock::time_point now = _CLOCK.now();
-//      duration<float> dur = duration_cast<duration<float>>(now - _LAST);
-//      _LAST = now;
-//      char lala[32]; sprintf(lala, "%d %f %f", frame_id, dur.count(), 1/dur.count());
-//      putText(origImg, lala, Point(10, 20), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 0, 0, 255));
-//    }
+    cap >> img;
+    FLT_SIZE = mw_trackbar;
 
     Rect myROI(10, 10, img.cols-40, img.rows-40);
     //Rect myROI(0, 0, _img.cols, _img.rows);
@@ -157,21 +188,11 @@ int main(void) {
     vector<vector<Point>> cont;
     threshold(img - avg, o, m[0]/(th_trackbar/10.0), 1, THRESH_BINARY);
 
-    //o *= 255;
-    //o.convertTo(o, CV_8U);
-    //adaptiveThreshold(o, o, 25, ADAPTIVE_THRESH_GAUSSIAN_C, THRESH_BINARY, 65, 2.4);
-//    imshow("b", o);
     o.convertTo(o, CV_8U);
     findContours(o, cont, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE, Point(0,0));
-//    adaptiveThreshold(img - avg, o, 1, ADAPTIVE_THRESH_GAUSSIAN_C, THRESH_BINARY, 4, 0.1);
-    Mat a; //= img.clone();
-//    img.convertTo(a, CV_GRAY2RGB);
-    a = Mat::zeros(img.rows, img.cols, CV_8UC3);
-//    printf("%d\n", a.channels());
+    Mat a = Mat::zeros(img.rows, img.cols, CV_8UC3);
     vector<Point2f> centers;
     vector<float> radii;
-    //Mat centers;
-    //vector<Point2f> cs;
     for (int i = 0; i < cont.size(); i++) {
       cout << "Cont " << i << endl;
       Moments mmts = moments(cont[i], true);
@@ -186,67 +207,20 @@ int main(void) {
     //  drawContours(origImg, cont, i, clrs[i%6]);
       line(a, Point(_x-5, _y), Point(_x+5, _y), Scalar(255, 255, 255, 35));
       line(a, Point(_x, _y-5), Point(_x, _y+5), Scalar(255, 255, 255, 35));
-      //centers.push_back(Mat(Matx12f(_x, _y)));
       centers.push_back(Point(_x, _y));
       radii.push_back(radius);
-      //cs.push_back(Point(_x, _y));
-
     };
-//    cout << centers.cols << " "
-//         << centers.rows << endl;
-    //centers = Mat(cs);
     if (!oldCenters.empty()) {
-//      //cout << "KOKOOOOOOOOOOOOOOOOOOOOOOOOOT "
-//      //  << oldCenters.cols << " "
-//      //  << oldCenters.rows << endl;
-//      cv::flann::KDTreeIndexParams parms(16);
-////      oldCenters.convertTo(oldCenters, CV_32F);
-//
-//      cv::flann::Index index(oldCenters, parms);
-//
-////      vector<int> indices;
-////      vector<float> dists;
-//      Mat indices = Mat(centers.rows, 4, CV_32SC1);
-//      Mat dists = Mat(centers.rows, 4, CV_32FC1);
-//
-//      centers.convertTo(centers, CV_32F);
-////      vector<Point2f> query; query.push_back(Point(oldCenters.col(0)));
-//      index.knnSearch(centers, indices, dists, 4, cv::flann::SearchParams());
-      //Mat indices = Mat(centers.rows, 4, CV_32SC1);
-      //Mat dists = Mat(centers.rows, 4, CV_32FC1);
       int c_size = centers.size();
       int oc_size = oldCenters.size();
       vector<int> indices(c_size);
-      { // find nearest neighbors, in O(n^2)
-        vector<float> mins(c_size);
-#pragma omp parallel for
-        for (int i = 0; i < c_size; i++) {
-          for (int j = 0; j < oc_size; j++) {
-            Point p1 = centers[i];
-            Point p2 = oldCenters[j];
-            float len = norm(p1 - p2);
-            if (mins[i] == 0 || mins[i] > len) {
-              mins[i] = len;
-              indices[i] = j;
-            }
-          }
-        }
-      }
-
-//      for (int row = 0; row < indices.rows; row++) {
-//        for (int col = 0; col < indices.cols; col++) {
-////          int idx = indices[row]; //indices.at<int>(row, col);
-////          float dst = dists[row]; //dists.at<int>(row, col);
-//          cout << "row, col: " << row << ", " << col << endl;
-//          int idx = indices.at<int>(row, col);
-//          float dst = dists.at<float>(row, col);
+      nearestN(centers, oldCenters, indices);
 #pragma omp parallel for
       for (int i = 0; i < c_size; i++) {
           int idx = indices[i];
           cout << "idx: " << idx << endl;
-          //if (idx >= oldCenters.rows || idx < 0) break;
-          Point p2 = centers[i]; //(oldCenters.at<float>(idx, 0),oldCenters.at<float>(idx, 1));
-          Point p1 = oldCenters[idx]; //(centers.at<float>(col, 0),centers.at<float>(col, 1));
+          Point p2 = centers[i];
+          Point p1 = oldCenters[idx];
           float dst = norm(p2 - p1);
           {
               char lala[32]; sprintf(lala, "r: %.2f, d: %.2f", radii[i], dst);
