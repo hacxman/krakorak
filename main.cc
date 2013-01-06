@@ -36,14 +36,17 @@ class Trail {
 
   public:
 
-  static vector<Point2f> toV2f(vector<Trail> &ts) {
+  static pair<vector<Point2f>, vector<int>> toV2f(vector<Trail> &ts) {
     vector<Point2f> out;
+    vector<int> out_;
+    int idx = 0;
     for (vector<Trail>::iterator it = ts.begin();
-         it != ts.end(); it++) {
+         it != ts.end(); it++, idx++) {
       if (it->isOld()) continue;
       out.push_back(it->predict());
+      out_.push_back(idx);
     }
-    return out;
+    return make_pair(out, out_);
   }
 
   bool isOld() {
@@ -66,6 +69,12 @@ class Trail {
 
   }
 
+  static void dump(vector<Trail> &ts) {
+    for (vector<Trail>::iterator it = ts.begin(); it!=ts.end(); it++) {
+      cerr << " (" << it->tail.size() << ", " << it->age << ")" << endl;
+    }
+  }
+
   Point2f predict() {
     if (tail.size() > 1) {
       return prediction;
@@ -74,20 +83,42 @@ class Trail {
     }
   };
 
-  Trail() : KF(2,1,0), age(0) {};
-
-  void operator<<(Point2f &p) {
-    if (tail.size() > 2) {
-      KF.correct(Mat(Matx12f(p.x, p.y)));
-    }
+  void add(Point2f p) {
+    //if (tail.size() > 2) {
+    //  KF.correct(Mat(Matx12f(p.x, p.y)));
+    //}
     tail.push_back(p);
+
+//    KF.correct(Mat(Matx12f(p.x, p.y)));
+    cerr << endl << " ts:" << tail.size() << endl << cerr.flush();
+    {
+      auto p_=predict();
+    cerr << " p:" << p_.x << " " << p_.y << endl << cerr.flush();
+    }
+
     if (tail.size() > 1) {
       int ts = tail.size();
-      Mat _prediction = KF.predict(Mat(Matx22f(tail[ts-1].x, tail[ts-1].y,
-                                               tail[ts-2].x, tail[ts-2].y)));
+/*      Mat _prediction = //KF.predict(); //Mat(Matx22f(tail[ts-1].x, tail[ts-1].y,
+                                      //         tail[ts-2].x, tail[ts-2].y)));
+      cerr << " _prediction: " << _prediction.at<float>(0) << " " << _prediction.at<float>(1) << endl;
       prediction = Point(_prediction.at<float>(0), _prediction.at<float>(1));
+      */
+      prediction = tail[ts-1] + (tail[ts-1] - tail[ts-2]);
     }
   }
+
+  void add(Point p) {
+    cout << p.x << " " << p.y << endl;
+    add(Point2f(p.x, p.y));
+  }
+
+
+  Trail() : KF(2,1,0), age(0) {};
+  Trail(const Trail &t) : tail(t.tail), KF(t.KF), prediction(t.prediction), age(t.age) {};
+  Trail(Point2f p) : KF(2,1,0), age(0) { this->add(p);};
+  Trail(Point p) : KF(2,1,0), age(0) { this->add(p);};
+
+
 };
 
 int FLT_SIZE = 10;
@@ -204,6 +235,8 @@ int main(void) {
   }
   cout << "avgs.len = " << avgs.size() << endl;
 
+  vector<Trail> trails;
+
   high_resolution_clock _CLOCK;
   high_resolution_clock::time_point _LAST(_CLOCK.now());
   for (int frame_id = 0;;frame_id++) {
@@ -276,23 +309,41 @@ int main(void) {
       centers.push_back(Point(_x, _y));
       radii.push_back(radius);
     };
-    if (!oldCenters.empty()) {
+
+    if (trails.empty()) {
+      trails.resize(centers.size());
+      transform(centers.begin(), centers.end(), trails.begin(), [](Point2f t) {return Trail(t); } );
+    } else {
+//    if (!oldCenters.empty()) {
       int c_size = centers.size();
       int oc_size = oldCenters.size();
-      vector<int> indices(c_size);
-      nearestN(centers, oldCenters, indices);
-#pragma omp parallel for
-      for (int i = 0; i < c_size; i++) {
+      vector<int> indices(c_size, -1);
+    //  vector<Trail> trs(c_size);
+    //  transform(centers.begin(), centers.end(), trs.begin(), [](Point2f &t) {return Trail(t); } );
+    //  nearestN(centers, oldCenters, indices);
+      pair<vector<Point2f>, vector<int>> preds = Trail::toV2f(trails);
+      if (preds.first.size() == 0) {
+        cout << " trails.size:" << trails.size() << endl;
+    Trail::dump(trails);
+    cerr << " LOL ";
+        for_each(centers.begin(), centers.end(), [&trails](Point2f &t) {trails.push_back(Trail(t));});
+      } else { 
+        nearestN(centers, preds.first, indices);
+//#pragma omp parallel for
+        for (int i = 0; i < c_size; i++) {
           int idx = indices[i];
-          //cout << "idx: " << idx << endl;
+          cout << "idx: " << idx << endl;
           Point p2 = centers[i];
-          Point p1 = oldCenters[idx];
+          cout << "     p2 " << p2.x << " " << p2.y << endl;
+          Point p1 = preds.first[idx];
+          cout << "     p1 " << p1.x << " " << p1.y << endl;
           float dst = norm(p2 - p1);
           {
               char lala[32]; sprintf(lala, "r: %.2f, d: %.2f", radii[i], dst);
               putText(origImg, lala, p2+Point(10,10), FONT_HERSHEY_SIMPLEX, 0.3, Scalar(0, 255, 0, 255));
           }
-          if (dst < radii[i]*10.0 && dst > 1.0) {
+          cout << "radii " << radii[i] << endl;
+          if (dst < 10.0 /*radii[i]*/ && dst > 1.0) {
 //          if (dst < 20.0) {
       //      cout << "KUUUUUUUUUUUUUUUUUUUUUURWAAAAAAAAAAA" << endl;
       //      cout << "dst: " << dst << " idx: " << idx << endl;
@@ -304,12 +355,20 @@ int main(void) {
             line(a, p2+Point(10, -10), p2+Point(-10, 10), Scalar(255, 0, 255, 128));
             line(origImg, p1, p2, Scalar(255, 255, 255, 0));
             line(origImg, p2, p2 + (p2 - p1), Scalar(0, 255, 0, 0));
+
+            trails[preds.second[idx]].add(p2);
+
           }
 
 //        }
+        }
       }
 
     }
+    Trail::dump(trails);
+    cerr << " LOL ";
+    Trail::runGC(trails);
+    Trail::dump(trails);
 //    } else { //cout << "             PICAAAAAAAAAA"
 //        << centers.cols << " "
 //        << centers.rows << endl; };
