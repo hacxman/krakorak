@@ -55,7 +55,8 @@ class Trail {
   int getId() {return id;}
 
   bool isOld() {
-    return age > 4 && tail.size() > 4 && age > tail.size();
+    return (age > 3) && (age > tail.size());
+      //&& (tail.size() >= 3) && (age > tail.size());
   };
 
   bool isWeak() {
@@ -64,7 +65,7 @@ class Trail {
 
   bool isShort() {
     const int len = 3;
-    return age > len && tail.size() < len;
+    return (age >= len) && (tail.size() < len);
   }
 
   static void runGC(vector<Trail> &ts) {
@@ -84,6 +85,7 @@ class Trail {
   }
 
   void dump() {
+    cerr << "props: " << (isOld() ? "old, " : "") << (isWeak() ? "weak, ": "") << (isShort() ? "short" : "") << endl;
     for (int i = 0; i < tail.size(); i++) {
       cerr << "  " << frameids[i] << ": " << tail[i].x << " " << tail[i].y << endl;
     }
@@ -106,6 +108,11 @@ class Trail {
 
   float getRadius(int id = 0) {
     return radii[(radii.size()-1) - id];
+  }
+
+  float getPredictionLen() {
+    if (isWeak()) return getRadius();
+    return norm(tail[tail.size()-1] - tail[tail.size()-2]);
   }
 
   void add(Point2f p, long frameId, float radius) {
@@ -418,12 +425,15 @@ int main(void) {
           //cout << "     pred idx :" << preds.second[i] << " idx:" << idx << " " << preds.second.size() << " " << centers.size() << endl;
 
           float dst = norm(p2 - p1);
-          if (//radii[idx] > 0.5 &&
-              ((!trails[preds.second[i]].isWeak() && dst < 10.0 /*radii[i]*/ && dst > 0.3) ||
+          if(((!trails[preds.second[i]].isWeak() && 
+                //dst < trails[preds.second[i]].getPredictionLen()*2.0 /*radii[i]*/ && dst > 0.3) ||
+                dst < (radii[i] > 10.0 ? 2*radii[i] : 10.0) && dst > 0.3) ||
               (trails[preds.second[i]].isWeak() && dst < 45.0 /*radii[i]*/ && dst > 0.3))) {
 
+              
             circle(origImg, p1, 
-                trails[preds.second[i]].isWeak() ? 45.0 : 10.0 /*5.0*radii[i]*/
+                trails[preds.second[i]].isWeak() ? 45.0 : 
+                  (radii[i] > 10.0 ? 2*radii[i] : 10.0) /*5.0*radii[i]*/
                 , Scalar(255,255,255,255));
             trails[preds.second[i]].add(p2, frame_id, radii[idx]);
             int id = trails[preds.second[i]].getId();
@@ -533,9 +543,14 @@ int main(void) {
 //    }
     imshow("b", a);
 
-    int c = waitKey(cnt>1 ? 100: 1); //waitKey(frame_id > 150 && frame_id < 250 ? 0: 2);
+    int c = waitKey(cnt>0 ? 100: 1); //waitKey(frame_id > 150 && frame_id < 250 ? 0: 2);
 //    cout << "#####  " << (0xff & c) << "  #####" << endl;
     if ((0xff & c) == 27) break;
+    if ((0xff & c) == 'd') { 
+      Trail::dump(trails, true);
+      cerr << "count: " << trails.size() << endl;
+      exit(1);
+    }
     if ((0xff & c) == ' ') usleep(20000);
 #endif
   }
